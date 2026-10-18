@@ -1,10 +1,13 @@
 #include "heapfile/HeapFile.h"
 
+
 #include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+
+
 
 // ============================================================================
 // HeapFile — STUDENT IMPLEMENTATION FILE
@@ -163,13 +166,16 @@ HeapFile::HeapFile(bufman::BufferManager& manager) : manager_(manager) {}
 
 bool HeapFile::is_open() const {
     // TODO(student): report whether a file is currently open.
-    return false;
+    return open_;
 }
 
 bool HeapFile::require_open(std::string& error) const {
     // TODO(student): fail with "heap file is not open" when closed.
-    (void)error;
-    return false;
+    if (!open_) {
+        error="heap file is not open";
+        return false;
+    }
+    return true;
 }
 
 bool HeapFile::create(const std::string& path,
@@ -178,10 +184,62 @@ bool HeapFile::create(const std::string& path,
     // non-empty path, validate the record size, alloc page 0, format it as
     // a SlottedPage, write the identification record, and close (flushing)
     // the file — leaving this HeapFile closed.
-    (void)path;
-    (void)schema;
-    (void)error;
-    return false;
+    schema::TupleSerializer serializer(schema);
+    std::size_t record_size_=serializer.record_size();
+    error.clear();
+    if (open_) {
+        error= "cannot create \""+ path + "\": this heap file is already open";
+        return false;
+    }
+
+    bufman::File file;
+
+
+    if (record_size_==0) {
+        error= "schema has no record layout";
+        return false;
+    }
+    if (slot_capacity(record_size_)==0) {
+        error="record size does no fit a page";
+        return false;
+    }
+
+    if (!manager_.open_file(path,file,error)) {
+        return false;
+    }
+    const std::uint64_t blocks = bufman::block_count(file,error);
+    if (!error.empty()) {
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    if (blocks>0) {
+        error= "cannot create \"" + path +"\": the file already holds " +
+        std::to_string(blocks) + "block(s)";
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    //Asignar la pagina 0, el header
+    std::size_t frame = 0;
+    if (!manager_.alloc_page(file,0,frame,error)) {
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    SlottedPage header;
+    header.bind(manager_.frame(frame).buffer, record_size_);
+    header.format();
+    if (!write_identification(manager_.frame(frame).buffer,schema, error)) {
+        release(manager_, frame, true);
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    release(manager_, frame, true);
+    manager_.close_all(error);
+    return error.empty();
+
 }
 
 bool HeapFile::open(const std::string& path,
@@ -313,9 +371,20 @@ bool HeapFile::close(std::string& error) {
     // TODO(student): close the file through the manager; reset this
     // HeapFile's state only when that succeeded, so a failed close can be
     // retried.
-    (void)error;
-    return false;
-}
+    if (!require_open(error)) {
+        return false;
+    }
+    if (!manager_.close_file(file_,error)) {
+        return false;
+    }
+    open_ = false;
+    schema_=nullptr;
+    serializer_.reset();
+    record_size_=0;
+    return true;
+    }
+
+
 
 // --- HeapFileIterator -------------------------------------------------------
 

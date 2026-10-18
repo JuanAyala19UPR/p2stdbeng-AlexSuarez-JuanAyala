@@ -1,5 +1,6 @@
 #include "bufpool/BufferManager.h"
 
+#include <cstring>
 #include <functional>
 
 namespace bufman {
