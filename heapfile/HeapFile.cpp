@@ -1,10 +1,13 @@
 #include "heapfile/HeapFile.h"
 
+
 #include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+
+
 
 // ============================================================================
 // HeapFile — STUDENT IMPLEMENTATION FILE
@@ -163,13 +166,16 @@ HeapFile::HeapFile(bufman::BufferManager& manager) : manager_(manager) {}
 
 bool HeapFile::is_open() const {
     // TODO(student): report whether a file is currently open.
-    return false;
+    return open_;
 }
 
 bool HeapFile::require_open(std::string& error) const {
     // TODO(student): fail with "heap file is not open" when closed.
-    (void)error;
-    return false;
+    if (!open_) {
+        error="heap file is not open";
+        return false;
+    }
+    return true;
 }
 
 bool HeapFile::create(const std::string& path,
@@ -178,10 +184,62 @@ bool HeapFile::create(const std::string& path,
     // non-empty path, validate the record size, alloc page 0, format it as
     // a SlottedPage, write the identification record, and close (flushing)
     // the file — leaving this HeapFile closed.
-    (void)path;
-    (void)schema;
-    (void)error;
-    return false;
+    schema::TupleSerializer serializer(schema);
+    std::size_t record_size_=serializer.record_size();
+    error.clear();
+    if (open_) {
+        error= "cannot create \""+ path + "\": this heap file is already open";
+        return false;
+    }
+
+    bufman::File file;
+
+
+    if (record_size_==0) {
+        error= "schema has no record layout";
+        return false;
+    }
+    if (slot_capacity(record_size_)==0) {
+        error="record size does no fit a page";
+        return false;
+    }
+
+    if (!manager_.open_file(path,file,error)) {
+        return false;
+    }
+    const std::uint64_t blocks = bufman::block_count(file,error);
+    if (!error.empty()) {
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    if (blocks>0) {
+        error= "cannot create \"" + path +"\": the file already holds " +
+        std::to_string(blocks) + "block(s)";
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    //Asignar la pagina 0, el header
+    std::size_t frame = 0;
+    if (!manager_.alloc_page(file,0,frame,error)) {
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    SlottedPage header;
+    header.bind(manager_.frame(frame).buffer, record_size_);
+    header.format();
+    if (!write_identification(manager_.frame(frame).buffer,schema, error)) {
+        release(manager_, frame, true);
+        std::string close_error;
+        manager_.close_all(close_error);
+        return false;
+    }
+    release(manager_, frame, true);
+    manager_.close_all(error);
+    return error.empty();
+
 }
 
 bool HeapFile::open(const std::string& path,
@@ -212,10 +270,32 @@ bool HeapFile::append_fresh_page(std::uint32_t page_id, std::size_t page_frame,
     // element (head and tail) and advance next_page_id past it; clear the
     // page's own links. Only called right after an allocation, when the
     // free list is empty by construction — refuse otherwise.
-    (void)page_id;
-    (void)page_frame;
-    (void)error;
-    return false;
+    std::size_t frame_header=0;
+    if (!manager_.pin(file_,0,frame_header,error)) {
+        return false;
+
+    }
+    HeaderFields fields=read_header_fields(manager_.frame(frame_header).buffer);
+
+    if (fields.free_head!=kNoPage) {
+        release(manager_,frame_header,false);
+        error="It can't append a new page because the free list is not empty";
+        return false;
+    }
+    fields.free_head=page_id;
+    fields.free_tail=page_id;
+    fields.next_page_id=page_id+1;
+
+    write_header_fields(manager_.frame(frame_header).buffer,fields);
+
+    SlottedPage page;
+    page.bind(manager_.frame(page_frame).buffer,record_size_);
+    page.set_prev_page(kNoPage);
+    page.set_next_page(kNoPage);
+
+    release(manager_,frame_header,true);
+
+    return true;
 }
 
 bool HeapFile::move_between_lists(bool to_full, std::uint32_t page_id,
@@ -241,6 +321,10 @@ bool HeapFile::insert(const tuple::Tuple& tuple, RowId& row_id,
     // the free list when the free list is empty — store the record in the
     // target's first free slot, and move the page to the full list when
     // its last free slot was taken. Report the new row id.
+    std::vector<char> record(record_size_);
+    serializer_->serialize(tuple,record.data(), record.size(),error);
+
+
     (void)tuple;
     (void)row_id;
     (void)error;
@@ -313,9 +397,20 @@ bool HeapFile::close(std::string& error) {
     // TODO(student): close the file through the manager; reset this
     // HeapFile's state only when that succeeded, so a failed close can be
     // retried.
-    (void)error;
-    return false;
-}
+    if (!require_open(error)) {
+        return false;
+    }
+    if (!manager_.close_file(file_,error)) {
+        return false;
+    }
+    open_ = false;
+    schema_=nullptr;
+    serializer_.reset();
+    record_size_=0;
+    return true;
+    }
+
+
 
 // --- HeapFileIterator -------------------------------------------------------
 
