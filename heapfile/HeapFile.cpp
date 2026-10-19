@@ -319,9 +319,29 @@ bool HeapFile::move_between_lists(bool to_full, std::uint32_t page_id,
     auto page_new_next=page_new.next_page();
     auto page_new_prev=page_new.prev_page();
 
-    //Pinear y bindear el h
+    //Pinear todas las paginas auxiliareas
     std::size_t frame_header=0;
     manager_.pin(file_,0,frame_header,error);
+
+    std::size_t frame_previous_page=0;
+    if (page_new_prev!=kNoPage) {
+        manager_.pin(file_,page_new_prev,frame_previous_page,error);
+    }
+    std::size_t frame_next_page=0;
+    if (page_new_next!=kNoPage) {
+        manager_.pin(file_,page_new_next, frame_next_page,error);
+    }
+    auto page_head_new_list_offset=head_offset(!to_full);
+    auto page_tail_new_list_offset=tail_offset(!to_full);
+    auto page_tail_new_list=page_detail::read_u32(manager_.frame(frame_header).buffer, page_tail_new_list_offset);
+    std::size_t frame_old_tail=0;
+    if (page_tail_new_list!=kNoPage) {
+        manager_.pin(file_, page_tail_new_list,frame_old_tail,error);
+    }
+
+
+
+
     SlottedPage page_header;
     page_header.bind(manager_.frame(frame_header).buffer,record_size_);
 
@@ -332,44 +352,44 @@ bool HeapFile::move_between_lists(bool to_full, std::uint32_t page_id,
     } else {
         //sino es asi tengo que bindear la pagina del previous para cambiarle su next
         SlottedPage previous_page;
-        std::size_t frame_previous_page;
-        manager_.pin(file_,page_new_prev,frame_previous_page,error);
+        //std::size_t frame_previous_page;
+        //manager_.pin(file_,page_new_prev,frame_previous_page,error);
         previous_page.bind(manager_.frame(frame_previous_page).buffer, record_size_);
         page_detail::write_u32(manager_.frame(frame_previous_page).buffer
             ,kNextPageIdOffset,page_new_next);
 
         //release hacer unpin y cambiarle el dirty para que haga flush
-        release(manager_, frame_previous_page,true);
+        //release(manager_, frame_previous_page,true);
     }
     ///Con el next
     if (page_new_next==kNoPage) {
         page_detail::write_u32(manager_.frame(frame_header).buffer, tail_to_full,page_new_prev);
     }else {
-        std::size_t frame_next_page=0;
-        manager_.pin(file_,page_new_next, frame_next_page,error);
+        //std::size_t frame_next_page=0;
+        //manager_.pin(file_,page_new_next, frame_next_page,error);
         SlottedPage next_page;
         next_page.bind(manager_.frame(frame_next_page).buffer, record_size_);
         page_detail::write_u32(manager_.frame(frame_next_page).buffer,kPrevPageIdOffset,page_new_prev);
-        release(manager_,frame_next_page,true);
+        //release(manager_,frame_next_page,true);
     }
 
 
     ///SEGUNDA PARTE AÑADIR A LA OTRA LISTA LA PAGINA RECIBIDA COMO PARAMETRO
     ///
 
-    auto page_head_new_list_offset=head_offset(!to_full);
-    auto page_tail_new_list_offset=tail_offset(!to_full);
-    auto page_tail_new_list=page_detail::read_u32(manager_.frame(frame_header).buffer, page_tail_new_list_offset);
+    //auto page_head_new_list_offset=head_offset(!to_full);
+    //auto page_tail_new_list_offset=tail_offset(!to_full);
+    //auto page_tail_new_list=page_detail::read_u32(manager_.frame(frame_header).buffer, page_tail_new_list_offset);
 
     if (page_tail_new_list!=kNoPage) {
-        std::size_t frame_old_tail=0;
-        manager_.pin(file_, page_tail_new_list,frame_old_tail,error);
+        //std::size_t frame_old_tail=0;
+        //manager_.pin(file_, page_tail_new_list,frame_old_tail,error);
         SlottedPage page_tail_old;
         page_tail_old.bind(manager_.frame(frame_old_tail).buffer,record_size_);
 
         //Cambiar el next del old tail
         page_detail::write_u32(manager_.frame(frame_old_tail).buffer, kNextPageIdOffset, page_id);
-        release(manager_,frame_old_tail,true);
+        //release(manager_,frame_old_tail,true);
     }else {
         page_detail::write_u32(manager_.frame(frame_header).buffer,page_head_new_list_offset,page_id);
     }
@@ -377,8 +397,17 @@ bool HeapFile::move_between_lists(bool to_full, std::uint32_t page_id,
 
     page_new.set_next_page(kNoPage);
     page_new.set_prev_page(page_tail_new_list);
-    //Soltar el header
+    //Soltar los pines
+    if (page_new_prev!=kNoPage) {
+        release(manager_, frame_previous_page,true);
+    }
     release(manager_, frame_header, true);
+    if (page_tail_new_list!=kNoPage) {
+        release(manager_,frame_old_tail,true);
+    }
+    if (page_new_next!=kNoPage) {
+        release(manager_,frame_next_page,true);
+    }
     return true;
 }
 
