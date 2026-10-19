@@ -270,10 +270,32 @@ bool HeapFile::append_fresh_page(std::uint32_t page_id, std::size_t page_frame,
     // element (head and tail) and advance next_page_id past it; clear the
     // page's own links. Only called right after an allocation, when the
     // free list is empty by construction — refuse otherwise.
-    (void)page_id;
-    (void)page_frame;
-    (void)error;
-    return false;
+    std::size_t frame_header=0;
+    if (!manager_.pin(file_,0,frame_header,error)) {
+        return false;
+
+    }
+    HeaderFields fields=read_header_fields(manager_.frame(frame_header).buffer);
+
+    if (fields.free_head!=kNoPage) {
+        release(manager_,frame_header,false);
+        error="It can't append a new page because the free list is not empty";
+        return false;
+    }
+    fields.free_head=page_id;
+    fields.free_tail=page_id;
+    fields.next_page_id=page_id+1;
+
+    write_header_fields(manager_.frame(frame_header).buffer,fields);
+
+    SlottedPage page;
+    page.bind(manager_.frame(page_frame).buffer,record_size_);
+    page.set_prev_page(kNoPage);
+    page.set_next_page(kNoPage);
+
+    release(manager_,frame_header,true);
+
+    return true;
 }
 
 bool HeapFile::move_between_lists(bool to_full, std::uint32_t page_id,
@@ -299,6 +321,10 @@ bool HeapFile::insert(const tuple::Tuple& tuple, RowId& row_id,
     // the free list when the free list is empty — store the record in the
     // target's first free slot, and move the page to the full list when
     // its last free slot was taken. Report the new row id.
+    std::vector<char> record(record_size_);
+    serializer_->serialize(tuple,record.data(), record.size(),error);
+
+
     (void)tuple;
     (void)row_id;
     (void)error;
